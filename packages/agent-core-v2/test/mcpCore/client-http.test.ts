@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ErrorCodes, Error2 } from '#/errors';
 import { buildMcpHttpHeaders, HttpMcpClient, isTerminalTransportError } from '#/mcpCore/client-http';
 
-import { startInProcessHttpMcpServer } from './stubs';
+import { startInProcessHttpMcpServer, startModernHttpMcpServer } from './stubs';
 
 const cleanups: Array<() => Promise<void> | void> = [];
 
@@ -115,6 +115,21 @@ describe('buildMcpHttpHeaders', () => {
 });
 
 describe('HttpMcpClient', () => {
+  it('connects, lists tools, and calls a 2026-07-28-only server', async () => {
+    const server = await startModernHttpMcpServer();
+    cleanups.push(server.close);
+    const client = new HttpMcpClient({ transport: 'http', url: server.url });
+    try {
+      await client.connect();
+      expect((await client.listTools()).map((tool) => tool.name)).toEqual(['echo']);
+      expect((await client.callTool('echo', { text: 'hello' })).content).toEqual([
+        { type: 'text', text: 'modern:hello' },
+      ]);
+    } finally {
+      await client.close();
+    }
+  }, 15000);
+
   it('connects, lists tools, and round-trips a call over real HTTP', async () => {
     const server = await startInProcessHttpMcpServer();
     cleanups.push(server.close);

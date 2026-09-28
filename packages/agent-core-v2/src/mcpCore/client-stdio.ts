@@ -1,4 +1,4 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client, SdkError, SdkErrorCode } from '@modelcontextprotocol/client';
 import { ReadBuffer, serializeMessage } from '@modelcontextprotocol/sdk/shared/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
@@ -35,15 +35,16 @@ export interface StdioMcpClientOptions {
 const STDERR_BUFFER_CAPACITY = 4 * 1024;
 
 export class StdioMcpClient implements MCPClient {
-  private readonly client: Client;
-  private readonly transport: RuntimeStdioTransport;
+  private client: Client;
+  private transport: RuntimeStdioTransport;
   private readonly startupTimeoutMs?: number;
   private readonly toolCallTimeoutMs?: number;
+  private readonly config: McpServerStdioConfig;
+  private readonly options: StdioMcpClientOptions;
   private readonly stderrBuffer = new BoundedTail(STDERR_BUFFER_CAPACITY);
   private started = false;
   private closed = false;
   private ready = false;
-  private hooksInstalled = false;
   private unexpectedCloseListener: UnexpectedCloseListener | undefined;
   private lastTransportError: Error | undefined;
   private pendingUnexpectedClose: UnexpectedCloseReason | undefined;
@@ -54,11 +55,10 @@ export class StdioMcpClient implements MCPClient {
     if (config.executor !== undefined && config.executor !== 'local') {
       throw new Error2(ErrorCodes.NOT_IMPLEMENTED, `MCP stdio executor '${config.executor}' is not yet implemented`);
     }
+    this.config = config;
+    this.options = options;
     this.transport = new RuntimeStdioTransport(config, options, this.stderrBuffer);
-    this.client = new Client({
-      name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
-      version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
-    });
+    this.client = this.createClient(options, 'auto');
     this.startupTimeoutMs = options.startupTimeoutMs;
     this.toolCallTimeoutMs = options.toolCallTimeoutMs;
   }
@@ -71,10 +71,22 @@ export class StdioMcpClient implements MCPClient {
     this.started = true;
     this.installTransportHooks();
     try {
-      await this.client.connect(
-        this.transport,
-        buildRequestOptions(this.startupTimeoutMs, undefined),
-      );
+      try {
+        await this.client.connect(
+          this.transport,
+          buildRequestOptions(this.startupTimeoutMs, undefined),
+        );
+      } catch (error) {
+        if (!isClosedLegacyProbe(error) || this.closed) throw error;
+        await this.client.close();
+        this.transport = new RuntimeStdioTransport(this.config, this.options, this.stderrBuffer);
+        this.client = this.createClient(this.options, 'legacy');
+        this.installTransportHooks();
+        await this.client.connect(
+          this.transport,
+          buildRequestOptions(this.startupTimeoutMs, undefined),
+        );
+      }
     } catch (error) {
       await this.closeStartedClient();
       throw error;
@@ -119,7 +131,7 @@ export class StdioMcpClient implements MCPClient {
     signal?: AbortSignal,
   ): Promise<MCPToolResult> {
     const requestOptions = buildRequestOptions(this.toolCallTimeoutMs, signal);
-    const result = await this.client.callTool({ name, arguments: args }, undefined, requestOptions);
+    const result = await this.client.callTool({ name, arguments: args }, requestOptions);
     return toMcpToolResult(result);
   }
 
@@ -134,8 +146,6 @@ export class StdioMcpClient implements MCPClient {
   }
 
   private installTransportHooks(): void {
-    if (this.hooksInstalled) return;
-    this.hooksInstalled = true;
     this.client.onclose = () => {
       if (this.closed) return;
       if (!this.ready) return;
@@ -155,6 +165,24 @@ export class StdioMcpClient implements MCPClient {
       this.lastTransportError = error;
     };
   }
+
+  private createClient(options: StdioMcpClientOptions, mode: 'auto' | 'legacy'): Client {
+    return new Client(
+      {
+        name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
+        version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
+      },
+      { versionNegotiation: { mode } },
+    );
+  }
+}
+
+function isClosedLegacyProbe(error: unknown): boolean {
+  return (
+    error instanceof SdkError &&
+    error.code === SdkErrorCode.EraNegotiationFailed &&
+    error.message.includes('the connection closed during the server/discover probe')
+  );
 }
 
 class RuntimeStdioTransport implements Transport {
@@ -167,10 +195,18 @@ class RuntimeStdioTransport implements Transport {
   private started = false;
   private closed = false;
 
+  get pid(): number | undefined {
+    return this.process?.pid;
+  }
+
+  get stderr(): null {
+    return null;
+  }
+
   constructor(
     private readonly config: McpServerStdioConfig,
     private readonly options: StdioMcpClientOptions,
-    private readonly stderr: BoundedTail,
+    private readonly stderrTail: BoundedTail,
   ) {}
 
   async start(): Promise<void> {
@@ -197,7 +233,7 @@ class RuntimeStdioTransport implements Transport {
       process.stdout.on('end', () => this.finish());
       process.stdout.on('error', (error: Error) => this.onerror?.(error));
       process.stderr.on('data', (chunk: Buffer | string) => {
-        this.stderr.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+        this.stderrTail.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
       });
       process.stderr.on('error', (error: Error) => this.onerror?.(error));
       void process.wait().then(

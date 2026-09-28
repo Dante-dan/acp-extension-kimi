@@ -198,6 +198,22 @@ describe('StdioMcpClient', () => {
     }
   }, 15000);
 
+  it.each([
+    ['modern-only', new URL('./fixtures/modern-only-stdio-server.mjs', import.meta.url).pathname, 'modern:hello'],
+    ['strict legacy', new URL('./fixtures/strict-legacy-stdio-server.mjs', import.meta.url).pathname, 'legacy:hello'],
+  ])('negotiates with a %s server and calls its tool', async (_name, fixture, expected) => {
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [fixture] });
+    try {
+      await client.connect();
+      expect((await client.listTools()).map((tool) => tool.name)).toEqual(['echo']);
+      expect((await client.callTool('echo', { text: 'hello' })).content).toEqual([
+        { type: 'text', text: expected },
+      ]);
+    } finally {
+      await client.close();
+    }
+  }, 15000);
+
   it('propagates server-reported isError', async () => {
     const client = createClient({
       transport: 'stdio',

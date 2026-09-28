@@ -3,6 +3,10 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import {
+  McpServer as ModernMcpServer,
+  createMcpHandler,
+} from '@modelcontextprotocol/server';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
@@ -186,6 +190,53 @@ export async function startInProcessHttpMcpServer(opts?: {
   return {
     url: `http://127.0.0.1:${port}/mcp`,
     close: () => closeServer(httpServer),
+  };
+}
+
+export async function startModernHttpMcpServer(): Promise<{ url: string; close: () => Promise<void> }> {
+  const handler = createMcpHandler(
+    () => {
+      const server = new ModernMcpServer({ name: 'modern-http', version: '1' });
+      server.registerTool(
+        'echo',
+        { inputSchema: z.object({ text: z.string() }) },
+        async ({ text }) => ({ content: [{ type: 'text', text: `modern:${text}` }] }),
+      );
+      return server;
+    },
+    { legacy: 'reject' },
+  );
+  const httpServer = createServer((req, res) => {
+    void (async () => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const headers = new Headers();
+      for (const [name, value] of Object.entries(req.headers)) {
+        if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(', ') : value);
+      }
+      const request = new Request(`http://127.0.0.1${req.url}`, {
+        method: req.method,
+        headers,
+        body: chunks.length > 0 ? Buffer.concat(chunks) : undefined,
+      });
+      const response = await handler.fetch(request);
+      res.writeHead(response.status, Object.fromEntries(response.headers));
+      res.end(Buffer.from(await response.arrayBuffer()));
+    })().catch((error: unknown) => {
+      res.writeHead(500);
+      res.end(String(error));
+    });
+  });
+  await new Promise<void>((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  const address = httpServer.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      await handler.close();
+      await new Promise<void>((resolve) => httpServer.close(() => {
+        resolve();
+      }));
+    },
   };
 }
 

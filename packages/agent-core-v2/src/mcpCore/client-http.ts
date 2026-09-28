@@ -1,8 +1,7 @@
 import { ErrorCodes, Error2 } from '#/errors';
 import type { McpServerHttpConfig } from './config-schema';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 import {
   buildRequestOptions,
@@ -49,12 +48,14 @@ export class HttpMcpClient implements MCPClient {
     this.transport = new StreamableHTTPClientTransport(new URL(config.url), {
       requestInit: headers !== undefined ? { headers } : undefined,
       fetch: createMcpOAuthFetch(options.oauthProvider, options.fetch),
-      authProvider: options.oauthProvider,
     });
-    this.client = new Client({
-      name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
-      version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
-    });
+    this.client = new Client(
+      {
+        name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
+        version: options.clientVersion ?? KIMI_MCP_CLIENT_VERSION,
+      },
+      { versionNegotiation: { mode: 'auto' } },
+    );
     this.startupTimeoutMs = options.startupTimeoutMs;
     this.toolCallTimeoutMs = options.toolCallTimeoutMs;
   }
@@ -111,7 +112,7 @@ export class HttpMcpClient implements MCPClient {
     signal?: AbortSignal,
   ): Promise<MCPToolResult> {
     const requestOptions = buildRequestOptions(this.toolCallTimeoutMs, signal);
-    const result = await this.client.callTool({ name, arguments: args }, undefined, requestOptions);
+    const result = await this.client.callTool({ name, arguments: args }, requestOptions);
     return toMcpToolResult(result);
   }
 

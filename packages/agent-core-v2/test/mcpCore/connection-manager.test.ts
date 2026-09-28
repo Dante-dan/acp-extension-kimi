@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { join } from 'pathe';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client as ModernClient } from '@modelcontextprotocol/client';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
@@ -535,9 +536,10 @@ describe('McpConnectionManager', () => {
     ['sse', { transport: 'sse' as const, url: 'https://example.test/sse' }],
   ])(
     'forwards the resolved default startup timeout above the SDK default over %s',
-    async (_transport, config) => {
-      const connect = vi.spyOn(Client.prototype, 'connect').mockResolvedValue();
-      const listTools = vi.spyOn(Client.prototype, 'listTools').mockResolvedValue({ tools: [] });
+    async (transport, config) => {
+      const prototype = transport === 'sse' ? Client.prototype : ModernClient.prototype;
+      const connect = vi.spyOn(prototype, 'connect').mockResolvedValue();
+      const listTools = vi.spyOn(prototype, 'listTools').mockResolvedValue({ tools: [] });
       const cm = createManager({
         resolveDefaultTimeouts: () => ({ startupTimeoutMs: 120_000 }),
       });
@@ -565,9 +567,10 @@ describe('McpConnectionManager', () => {
     ['sse', { transport: 'sse' as const, url: 'https://example.test/sse' }],
   ])(
     'forwards per-server startupTimeoutMs above the SDK default over %s',
-    async (_transport, config) => {
-      const connect = vi.spyOn(Client.prototype, 'connect').mockResolvedValue();
-      const listTools = vi.spyOn(Client.prototype, 'listTools').mockResolvedValue({ tools: [] });
+    async (transport, config) => {
+      const prototype = transport === 'sse' ? Client.prototype : ModernClient.prototype;
+      const connect = vi.spyOn(prototype, 'connect').mockResolvedValue();
+      const listTools = vi.spyOn(prototype, 'listTools').mockResolvedValue({ tools: [] });
       const cm = createManager({
         resolveDefaultTimeouts: () => ({ startupTimeoutMs: 120_000 }),
       });
