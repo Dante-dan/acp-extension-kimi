@@ -12,6 +12,7 @@ import type {
 } from 'acp-extension-core';
 
 export const LODY_EXTENSION_CAPABILITIES = {
+  runtimeCapabilities: { version: 1 },
   subagentEvents: { version: 1 },
   usage: { version: 1 },
   rateLimits: { version: 1, query: true },

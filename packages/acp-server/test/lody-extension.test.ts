@@ -1,3 +1,4 @@
+import { AcpServer } from '../src/server';
 import type { Klient } from '@moonshot-ai/klient';
 import { describe, expect, it } from 'vitest';
 
@@ -217,5 +218,21 @@ describe('native title availability', () => {
   ])('advertises only a configured native OAuth title service', async (providers, expected) => {
     const klient = { global: { config: { get: async () => providers } } } as unknown as Klient;
     expect(await supportsSessionTitles(klient)).toBe(expected);
+  });
+});
+
+describe('runtime capability management', () => {
+  it('preserves prerequisites and rejects unconfirmed installation without changing state', async () => {
+    let installed = false;
+    const status = () => ({ id: 'kimi-cu' as const, displayName: 'Computer Use', description: '', supported: true, state: installed ? 'partial' as const : 'not_installed' as const, steps: [{ id: 'permissions', state: 'missing' as const }], install: { running: false } });
+    const klient = { global: { capabilities: { list: async () => [status()], get: async () => status(), install: async () => { installed = true; return status(); } } } } as unknown as Klient;
+    const manage = (params: unknown) => AcpServer.prototype.runtimeCapabilities.call({ klient } as unknown as AcpServer, params);
+    expect(await manage({ action: 'list' })).toEqual({ capabilities: [status()] });
+    await expect(manage({ action: 'install', id: 'kimi-cu' })).rejects.toThrow('explicit user confirmation');
+    expect((await manage({ action: 'get', id: 'kimi-cu' })).capabilities[0]?.state).toBe('not_installed');
+    const result = await manage({ action: 'install', id: 'kimi-cu', confirmed: true });
+    expect(result.capabilities[0]?.state).toBe('partial');
+    expect(result.capabilities[0]?.steps).toEqual([{ id: 'permissions', state: 'missing' }]);
+    await expect(manage({ action: 'remove', id: 'kimi-cu' })).rejects.toThrow('Unknown runtime capability action');
   });
 });

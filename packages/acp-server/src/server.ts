@@ -1,3 +1,4 @@
+import type { RuntimeCapabilitiesResponse } from 'acp-extension-core';
 /**
  * ACP agent method handlers backed by the `Klient` facade (in-memory
  * transport by default — see `./start`), routed through the SDK's app API
@@ -688,6 +689,26 @@ export class AcpServer {
     }
   }
 
+  /** Only the runtime owns installation and prerequisite detection. */
+  async runtimeCapabilities(params: unknown): Promise<RuntimeCapabilitiesResponse> {
+    const record = asRecord(params, LODY_EXTENSION_METHODS.runtimeCapabilities);
+    const action = record['action'];
+    if (action === 'list') {
+      return { capabilities: await this.klient.global.capabilities.list() };
+    }
+    if (action !== 'get' && action !== 'install') {
+      throw RequestError.invalidParams(params, 'Unknown runtime capability action');
+    }
+    const id = requiredString(record, 'id', LODY_EXTENSION_METHODS.runtimeCapabilities);
+    if (action === 'install' && record['confirmed'] !== true) {
+      throw RequestError.invalidParams(params, 'Installation requires explicit user confirmation');
+    }
+    const status = action === 'install'
+      ? await this.klient.global.capabilities.install(id)
+      : await this.klient.global.capabilities.get(id);
+    return { capabilities: [status] };
+  }
+
   /** Auth gate: throws `auth_required` unless authed (or `disableAuth`). */
   private async ensureAuthed(): Promise<void> {
     if (this.disableAuth) return;
@@ -854,6 +875,7 @@ function optionalString(
  */
 export function createAcpAgentApp(getServer: () => AcpServer): AgentApp {
   return agent({ name: 'kimi-code-acp' })
+    .onRequest<Record<string, unknown>, RuntimeCapabilitiesResponse>(LODY_EXTENSION_METHODS.runtimeCapabilities, params => asRecord(params, LODY_EXTENSION_METHODS.runtimeCapabilities), ctx => getServer().runtimeCapabilities(ctx.params))
     .onRequest(methods.agent.initialize, (ctx) => getServer().initialize(ctx.params))
     .onRequest(methods.agent.authenticate, (ctx) => getServer().authenticate(ctx.params))
     .onRequest(methods.agent.logout, (ctx) => getServer().logout(ctx.params))
