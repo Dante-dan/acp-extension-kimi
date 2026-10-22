@@ -54,6 +54,7 @@ import { SessionEventJournal, type EventEnvelope } from '../src/transport/ws/v1/
 import { TranscriptService } from '../src/services/transcript/transcriptService';
 
 type FakeBusEvent = { type: string };
+type WillCloseSessionListener = Parameters<NonNullable<ISessionManager['onWillCloseSession']>>[0];
 
 class FakeAgentBus {
   private allHandlers: Array<(e: FakeBusEvent) => void> = [];
@@ -368,6 +369,7 @@ function makeCore(
   sessions: Map<string, FakeLifecycle>,
   eventBus = new FakeEventBus(),
   metaAgents: Record<string, { type?: string; parentAgentId?: string }> = {},
+  onWillCloseSession?: ISessionManager['onWillCloseSession'],
 ): Scope {
   const handles = new WeakMap<FakeLifecycle, IScopeHandle>();
   const sessionFor = (sid: string) => {
@@ -406,6 +408,7 @@ function makeCore(
       if (token === ISessionManager) {
         return {
           get: sessionFor,
+          onWillCloseSession,
           list: () => [...sessions.keys()].map((sessionId) => sessionFor(sessionId)),
         };
       }
@@ -469,6 +472,53 @@ describe('SessionEventBroadcaster', () => {
     for (const sessionId of sessions.keys()) interactions.purgeSession(sessionId);
     await rm(dir, { recursive: true, force: true });
   });
+
+  it.each(['archive', 'exit'] as const)(
+    'rebinds a resumed session after %s without deleting its journal',
+    async (reason) => {
+      let listener: WillCloseSessionListener | undefined;
+      await bc.close();
+      bc = new SessionEventBroadcaster({
+        eventsDir: dir,
+        core: makeCore(sessions, eventBus, {}, (handler) => {
+          listener = handler;
+          return { dispose: () => { listener = undefined; } };
+        }),
+      });
+      const first = new FakeLifecycle();
+      const oldMain = first.addAgent('main');
+      sessions.set('s1', first);
+      const oldView = collectingTarget();
+      await bc.subscribe('s1', oldView.target);
+      oldMain.bus.emit(agentEvent('turn.started', { turnId: 1 }));
+      await vi.waitFor(() => expect(oldView.envelopes.some((e) => e.type === 'turn.started')).toBe(true));
+      const before = await bc.getCursor('s1');
+      const pending: Promise<void>[] = [];
+      listener?.({
+        sessionId: 's1',
+        reason,
+        handle: makeCore(sessions).accessor.get(ISessionManager).get('s1')!,
+        waitUntil: (work) => { pending.push(work); },
+      });
+      await Promise.all(pending);
+      sessions.delete('s1');
+      expect(await readdir(dir)).toContain('s1.jsonl');
+      const resumed = new FakeLifecycle();
+      const newMain = resumed.addAgent('main');
+      sessions.set('s1', resumed);
+      const view = collectingTarget();
+      await bc.subscribe('s1', view.target);
+      newMain.bus.emit(agentEvent('turn.started', { turnId: 2 }));
+      await vi.waitFor(() => expect(view.envelopes).toContainEqual(expect.objectContaining({
+        type: 'turn.started',
+        payload: expect.objectContaining({ turnId: 2 }),
+      })));
+      const after = await bc.getCursor('s1');
+      expect(after.epoch).toBe(before.epoch);
+      expect(after.seq).toBeGreaterThan(before.seq);
+      expect((await bc.getSnapshotState('s1')).inFlightTurn?.turn_id).toBe(2);
+    },
+  );
 
   it('does not install a pending state after its session disappears', async () => {
     const lifecycle = new FakeLifecycle();
