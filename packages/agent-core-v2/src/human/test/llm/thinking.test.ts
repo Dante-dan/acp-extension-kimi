@@ -579,30 +579,54 @@ describe('openai requester thinking', () => {
     expect('reasoning_details' in openrouterReplayed).toBe(false);
   });
 
-  it('echoes an empty reasoning_content on think-less assistant messages only when keeping all', async () => {
+  it.each([
+    { name: 'Kimi', options: kimiOpenAI, preservesWithoutHistory: true },
+    { name: 'generic OpenAI', options: {}, preservesWithoutHistory: false },
+  ])('$name echoes empty reasoning_content on think-less assistant messages when keeping all', async ({ options, preservesWithoutHistory }) => {
+    const history: readonly Message[] = [
+      createUserMessage('hi'),
+      createAssistantMessage([{ type: 'think', think: 'plan' }, { type: 'text', text: 'ready' }]),
+      createUserMessage('read the file'),
+      createAssistantMessage([], [{ type: 'function', id: 'call-1', name: 'read', arguments: '{}' }]),
+      { role: 'tool', toolCallId: 'call-1', content: [{ type: 'text', text: 'result' }] },
+    ];
     const preserving = stubOpenAIClient(chatCompletionChunks());
     const preservingRequester = createOpenAIRequester({
-      ...kimiOpenAI,
+      ...options,
       clientFactory: preserving.clientFactory,
     });
     await preservingRequester.generate(
       { model, thinking: { effort: 'on', keep: 'all' } },
-      { messages: [createUserMessage('hi'), createAssistantMessage([{ type: 'text', text: 'hello' }])] },
+      { messages: history },
       { signal: new AbortController().signal },
     );
-    expect(bodyMessages(preserving.body())[1]!['reasoning_content']).toBe('');
+    expect(bodyMessages(preserving.body())[3]!['reasoning_content']).toBe('');
 
     const plain = stubOpenAIClient(chatCompletionChunks());
     const plainRequester = createOpenAIRequester({
-      ...kimiOpenAI,
+      ...options,
       clientFactory: plain.clientFactory,
     });
     await plainRequester.generate(
       { model, thinking: { effort: 'on' } },
-      { messages: [createUserMessage('hi'), createAssistantMessage([{ type: 'text', text: 'hello' }])] },
+      { messages: history },
       { signal: new AbortController().signal },
     );
-    expect('reasoning_content' in bodyMessages(plain.body())[1]!).toBe(false);
+    expect('reasoning_content' in bodyMessages(plain.body())[3]!).toBe(false);
+
+    await plainRequester.generate(
+      { model, thinking: { effort: 'off', keep: 'all' } },
+      { messages: history },
+      { signal: new AbortController().signal },
+    );
+    expect('reasoning_content' in bodyMessages(plain.body())[3]!).toBe(false);
+
+    await plainRequester.generate(
+      { model, thinking: { effort: 'on', keep: 'all' } },
+      { messages: history.slice(2) },
+      { signal: new AbortController().signal },
+    );
+    expect('reasoning_content' in bodyMessages(plain.body())[1]!).toBe(preservesWithoutHistory);
   });
 
   it('selects the outbound reasoning key from the trait declaration or inbound detection', async () => {
