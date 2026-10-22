@@ -307,7 +307,7 @@ Configuration errors fail loudly instead of falling back silently. Session creat
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | `true` | Whether Thinking is enabled by default for new sessions; set to `false` to force Thinking off |
 | `effort` | `string` | — | Thinking effort: `low` / `medium` / `high` / `xhigh` / `max`; falls back to the model default when not in its supported list |
-| `keep` | `string` | `"all"` | Preserved Thinking passthrough: `kimi` sends it as `thinking.keep`, `anthropic` as a `clear_thinking_20251015` edit (routes to the beta Messages API). An off-value disables it; overridden by `KIMI_MODEL_THINKING_KEEP`; injected only while Thinking is on |
+| `keep` | `string` | `"all"` | Preserved Thinking passthrough: `kimi` sends it as `thinking.keep`; generic `openai` with `all` includes an empty reasoning field on assistant messages without thinking; `anthropic` sends a `clear_thinking_20251015` edit (routes to the beta Messages API). An off-value disables it; overridden by `KIMI_MODEL_THINKING_KEEP`; injected only while Thinking is on |
 
 <details><summary>Deprecated fields</summary>
 

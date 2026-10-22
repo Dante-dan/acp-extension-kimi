@@ -91,7 +91,11 @@ export function prepareOpenAIRequest(
       encodeReasoningEffortFallback(t, ctx.model, trait?.strictThinkingValidation === true),
     );
     kwargs = applied.kwargs;
-    preserveThinking = applied.preserveThinking;
+    preserveThinking =
+      applied.preserveThinking ||
+      (trait?.thinking === undefined &&
+        input.thinking.effort !== 'off' &&
+        input.thinking.keep === 'all');
   }
   if (
     trait?.thinking === undefined &&
