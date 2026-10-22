@@ -95,7 +95,8 @@ export function prepareOpenAIRequest(
       applied.preserveThinking ||
       (trait?.thinking === undefined &&
         input.thinking.effort !== 'off' &&
-        input.thinking.keep === 'all');
+        input.thinking.keep === 'all' &&
+        input.messages.some((message) => message.content.some((part) => part.type === 'think')));
   }
   if (
     trait?.thinking === undefined &&
