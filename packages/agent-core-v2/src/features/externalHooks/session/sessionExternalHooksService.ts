@@ -32,6 +32,7 @@ export class SessionExternalHooksService
   declare readonly _serviceBrand: undefined;
 
   private sessionTitle: string | undefined;
+  private isFork = false;
   private readonly createdAt = Date.now();
 
   constructor(
@@ -66,6 +67,7 @@ export class SessionExternalHooksService
       this._register(
         onDidCreate((event) => {
           if (event.sessionId !== this.context.sessionId) return;
+          this.isFork = event.source === 'fork';
           if (event.source !== 'fork' && event.source !== 'reclaimed') {
             event.waitUntil(this.triggerSessionStart(event.source));
           }
@@ -76,7 +78,7 @@ export class SessionExternalHooksService
     if (onWillClose !== undefined) {
       this._register(
         onWillClose((event) => {
-          if (event.sessionId !== this.context.sessionId || event.reason === 'reclaim') return;
+          if (event.sessionId !== this.context.sessionId || event.reason === 'reclaim' || this.isFork) return;
           event.waitUntil(this.triggerSessionEnd(event.reason));
         }),
       );

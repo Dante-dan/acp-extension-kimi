@@ -358,7 +358,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   resume(
     sessionId: string,
     opts?: ResumeSessionOptions,
-    source: Extract<SessionCreateSource, 'resume' | 'reclaimed'> = 'resume',
+    source: Extract<SessionCreateSource, 'resume' | 'reclaimed' | 'fork'> = opts?.source ?? 'resume',
   ): Promise<ISessionScopeHandle | undefined> {
     const inflight = this.resuming.get(sessionId);
     if (inflight !== undefined) return inflight;

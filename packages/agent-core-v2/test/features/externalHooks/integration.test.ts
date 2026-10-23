@@ -951,6 +951,9 @@ describe('IExternalHooksRunnerService integration', () => {
       await lifecycle.fireDidCreate('resume');
       await lifecycle.fireDidCreate('reclaimed');
       await lifecycle.fireDidCreate('fork');
+      await lifecycle.fireWillClose('exit');
+      expect(readHookLog(path).filter((entry) => entry['event'] === 'SessionEnd')).toEqual([]);
+      await lifecycle.fireDidCreate('reclaimed');
       await lifecycle.fireWillClose('reclaim');
       await lifecycle.fireWillClose('exit');
       await lifecycle.fireWillClose('archive');

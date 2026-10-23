@@ -87,7 +87,7 @@ export class SessionManager implements ISessionManager {
       (await this.controllerForSession(sessionId))?.resume(
         sessionId,
         options,
-        this.reclaimed.has(sessionId) ? 'reclaimed' : 'resume',
+        this.reclaimed.has(sessionId) ? 'reclaimed' : options?.source ?? 'resume',
       ),
     ).finally(() => this.pendingResumes.delete(sessionId));
     this.pendingResumes.set(sessionId, promise);

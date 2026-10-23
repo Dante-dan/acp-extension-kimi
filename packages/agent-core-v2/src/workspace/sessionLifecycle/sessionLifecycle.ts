@@ -26,6 +26,7 @@ export interface ForkSessionOptions {
 }
 
 export interface ResumeSessionOptions {
+  readonly source?: Extract<SessionCreateSource, 'resume' | 'fork'>;
   readonly additionalDirs?: readonly string[];
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
 }

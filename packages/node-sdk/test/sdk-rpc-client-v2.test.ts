@@ -66,6 +66,7 @@ import {
 } from '@moonshot-ai/agent-core-v2';
 
 import { McpOAuthService as McpOAuthServiceV2 } from '@moonshot-ai/agent-core-v2/mcpCore/oauth/service';
+import { IExternalHooksRunnerService } from '@moonshot-ai/agent-core-v2/features/externalHooks/app/externalHooksRunner';
 import { TowerStore } from '@moonshot-ai/agent-core-v2/features/tower/protocol/store';
 
 import { TEST_IDENTITY } from './test-identity';
@@ -157,6 +158,42 @@ async function findSessionDir(homeDir: string, sessionId: string): Promise<strin
 }
 
 describe('SDKRpcClientV2 (agent-core-v2 wiring)', () => {
+  it('keeps fork hooks silent until the fork is resumed normally', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
+    tempDirs.push(homeDir, workDir);
+    const client = new SDKRpcClientV2({ homeDir, identity: TEST_IDENTITY });
+    try {
+      await client.createSession({ id: 'ses_source', workDir });
+      const runner = client.engineAccessor.get(IExternalHooksRunnerService);
+      const trigger = vi.spyOn(runner, 'trigger');
+      const lifecycleCalls = () => trigger.mock.calls
+        .filter(([event]) => event === 'SessionStart' || event === 'SessionEnd')
+        .map(([event, args]) => ({ event, sessionId: args?.sessionId, ...args?.inputData }));
+
+      await client.forkSession({ id: 'ses_source', forkId: 'ses_fork' });
+      expect(lifecycleCalls()).toEqual([]);
+      await client.closeSession({ sessionId: 'ses_fork' });
+      expect(lifecycleCalls()).toEqual([]);
+      expect(getLiveSessionById(client.engineAccessor, 'ses_source')).toBeDefined();
+
+      await client.resumeSession({ id: 'ses_fork' });
+      await client.closeSession({ sessionId: 'ses_source' });
+      expect(lifecycleCalls()).toEqual([
+        expect.objectContaining({ event: 'SessionStart', sessionId: 'ses_fork', source: 'resume' }),
+        expect.objectContaining({ event: 'SessionEnd', sessionId: 'ses_source', reason: 'exit' }),
+      ]);
+      await client.closeSession({ sessionId: 'ses_fork' });
+      expect(lifecycleCalls()).toHaveLength(3);
+      expect(lifecycleCalls()[2]).toMatchObject({
+        event: 'SessionEnd', sessionId: 'ses_fork', reason: 'exit',
+      });
+      trigger.mockRestore();
+    } finally {
+      await client.close();
+    }
+  });
+
   it('exposes the validated runtime binding through Session', async () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));
