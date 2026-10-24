@@ -184,9 +184,9 @@ interface TurnDriver {
   cancelRequested?: boolean;
   /**
    * Turn-scoped events that arrived while `turnId` was still unknown. Once
-   * the launch resolves, the entries matching the driver's turn are replayed
-   * in arrival order; the rest (a still-draining prior turn) are dropped —
-   * the same verdict the live path would have given.
+   * the launch resolves, entries are replayed in arrival order and filtered
+   * by the same active-turn checks as the live path, including independently
+   * started turns that do not belong to this prompt.
    */
   early: Array<{ readonly turnId: number; readonly dispatch: () => void }>;
 }
@@ -211,6 +211,9 @@ export class AcpSession {
   private skills: readonly SkillSummary[] = [];
   /** The in-flight prompt's driver, if any. */
   private driver: TurnDriver | undefined;
+  private readonly activeTurns = new Set<number>();
+  private compactionActive = false;
+  private compactionLaunching = false;
   /**
    * Abort markers of prompts still in their pre-turn image-compression phase
    * (no turn launched yet, so `agent.cancel` has nothing to cancel).
@@ -292,6 +295,9 @@ export class AcpSession {
   async init(): Promise<void> {
     const events = this.agent.events;
     this.subscriptions.push(
+      events.on('turn.started', (event) => {
+        this.activeTurns.add(event.turnId);
+      }),
       events.on('assistant.delta', (event) => {
         this.dispatchTurnEvent(event.turnId, () => {
           this.onAssistantDelta(event);
@@ -337,9 +343,11 @@ export class AcpSession {
         this.onCompactionCompleted(event);
       }),
       events.on('compaction.cancelled', () => {
+        this.compactionActive = false;
         this.emitLocalChunk('Compaction cancelled.');
       }),
       events.on('compaction.blocked', () => {
+        this.compactionActive = false;
         this.emitLocalChunk(
           'Compaction is blocked by the current turn; retry when the turn is idle.',
         );
@@ -594,6 +602,7 @@ export class AcpSession {
     availableCommands: readonly AvailableCommand[],
   ): Promise<PromptResponse> {
     let text: string;
+    if (name === 'compact') this.compactionLaunching = true;
     try {
       text = await runBuiltinSlashCommand(
         name,
@@ -616,6 +625,8 @@ export class AcpSession {
         error: error instanceof Error ? error.message : String(error),
       });
       text = `/${name} failed: ${error instanceof Error ? error.message : String(error)}`;
+    } finally {
+      if (name === 'compact') this.compactionLaunching = false;
     }
     await this.conn.sessionUpdate({
       sessionId: this.sessionId,
@@ -643,10 +654,16 @@ export class AcpSession {
    * first prompt would never settle and both turns' events would go
    * unattributed. The legacy adapter rejected this case (`turn.agent_busy` →
    * -32600); reject locally instead, synchronously with driver assignment so
-   * two concurrent prompts cannot race past the check.
+   * two concurrent prompts cannot race past the check. Engine-started turns
+   * and background compaction also keep the engine busy without a driver.
    */
   private assertNoActiveTurn(): void {
-    if (this.driver !== undefined && !this.driver.settled) {
+    if (
+      (this.driver !== undefined && !this.driver.settled) ||
+      this.activeTurns.size > 0 ||
+      this.compactionActive ||
+      this.compactionLaunching
+    ) {
       throw RequestError.invalidRequest(
         { code: TURN_AGENT_BUSY_CODE },
         'another turn is already in progress',
@@ -706,7 +723,7 @@ export class AcpSession {
           // turn can outrun the launch round-trip — `activateSkill` returns
           // only after the prompt-metadata update).
           for (const early of driver.early.splice(0)) {
-            if (early.turnId === driver.turnId) early.dispatch();
+            early.dispatch();
           }
         },
         (error) => {
@@ -739,6 +756,7 @@ export class AcpSession {
     if (driver.settled) return;
     driver.settled = true;
     if (this.driver === driver) this.driver = undefined;
+    for (const early of driver.early.splice(0)) early.dispatch();
     action();
   }
 
@@ -752,17 +770,17 @@ export class AcpSession {
   }
 
   private onAssistantDelta(event: AgentEventPayloads['assistant.delta']): void {
-    if (this.driverFor(event.turnId) === undefined) return;
+    if (!this.activeTurns.has(event.turnId) && this.driverFor(event.turnId) === undefined) return;
     this.emit(assistantDeltaToSessionUpdate(this.sessionId, event));
   }
 
   private onThinkingDelta(event: AgentEventPayloads['thinking.delta']): void {
-    if (this.driverFor(event.turnId) === undefined) return;
+    if (!this.activeTurns.has(event.turnId) && this.driverFor(event.turnId) === undefined) return;
     this.emit(thinkingDeltaToSessionUpdate(this.sessionId, event));
   }
 
   private onToolCallStarted(event: AgentEventPayloads['tool.call.started']): void {
-    if (this.driverFor(event.turnId) === undefined) return;
+    if (!this.activeTurns.has(event.turnId) && this.driverFor(event.turnId) === undefined) return;
     // The klient payload mirrors `ToolCallStartedEvent` (`args` / `display`
     // arrive as `unknown` — cast at this seam).
     const mapped = event as unknown as ToolCallStartedEvent;
@@ -804,7 +822,7 @@ export class AcpSession {
   }
 
   private onToolCallDelta(event: AgentEventPayloads['tool.call.delta']): void {
-    if (this.driverFor(event.turnId) === undefined) return;
+    if (!this.activeTurns.has(event.turnId) && this.driverFor(event.turnId) === undefined) return;
     // The klient payload mirrors `ToolCallDeltaEvent` field-for-field.
     const mapped = event as unknown as ToolCallDeltaEvent;
     const key = acpToolCallId(event.turnId, event.toolCallId);
@@ -826,7 +844,7 @@ export class AcpSession {
   }
 
   private onToolProgress(event: AgentEventPayloads['tool.progress']): void {
-    if (this.driverFor(event.turnId) === undefined) return;
+    if (!this.activeTurns.has(event.turnId) && this.driverFor(event.turnId) === undefined) return;
     // The klient payload mirrors `ToolProgressEvent` field-for-field; the
     // helper forwards only `status` updates with text (as a title refresh)
     // and returns null for everything else, which `emit` drops.
@@ -834,7 +852,7 @@ export class AcpSession {
   }
 
   private onToolResult(event: AgentEventPayloads['tool.result']): void {
-    if (this.driverFor(event.turnId) === undefined) return;
+    if (!this.activeTurns.has(event.turnId) && this.driverFor(event.turnId) === undefined) return;
     const key = acpToolCallId(event.turnId, event.toolCallId);
     const locations = this.toolLocations.get(key);
     this.toolLocations.delete(key);
@@ -897,6 +915,7 @@ export class AcpSession {
    * compaction has no other client-visible signal.
    */
   private onCompactionStarted(event: AgentEventPayloads['compaction.started']): void {
+    this.compactionActive = true;
     if (event.trigger !== 'auto') return;
     this.emitLocalChunk(
       event.instruction === undefined
@@ -907,6 +926,7 @@ export class AcpSession {
 
   /** Report the compaction result (token/message summary). */
   private onCompactionCompleted(event: AgentEventPayloads['compaction.completed']): void {
+    this.compactionActive = false;
     this.emitLocalChunk(formatCompactionCompleted(event.result));
   }
 
@@ -923,7 +943,11 @@ export class AcpSession {
 
   private onTurnEnded(event: AgentEventPayloads['turn.ended']): void {
     const driver = this.driverFor(event.turnId);
-    if (driver === undefined) return;
+    const wasActive = this.activeTurns.delete(event.turnId);
+    if (driver === undefined) {
+      if (wasActive) void this.emitUsageUpdate();
+      return;
+    }
     const error = event.error as { readonly code: string; readonly message?: string } | undefined;
     this.settleDriver(driver, () => {
       // Auth failures must surface as a JSON-RPC `auth_required` error
