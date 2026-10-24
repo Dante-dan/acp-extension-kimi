@@ -486,6 +486,9 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
         : clonedArgs;
       try {
         const result = await (member as (...a: unknown[]) => unknown).apply(instance, callArgs);
+        if (service === 'agentContextMemoryService' && method === 'get' && Array.isArray(result)) {
+          return result.map(wireClone);
+        }
         return wireClone(result);
       } catch (error) {
         if (service === 'modelsDevImport' && error instanceof Error2) {
